@@ -23,18 +23,22 @@ try:
 
     def extract_info_from_filename(filename):
         """从文件名中提取信息"""
-        pattern = r"(\d{14})(.*?)\.(.*?)$"
+        pattern = r"^(\d{14})(.*?)(\.html?)$"
         match = re.match(pattern, filename)
         if match:
             timestamp, title, ext = match.groups()
-            date = datetime.strptime(timestamp, "%Y%m%d%H%M%S")
-            return {
-                'timestamp': timestamp,
-                'date': date,
-                'title': title.strip(),
-                'extension': ext,
-                'filename': filename
-            }
+            try:
+                date = datetime.strptime(timestamp, "%Y%m%d%H%M%S")
+                title = title.strip().replace('_', ' ')
+                return {
+                    'timestamp': timestamp,
+                    'date': date,
+                    'title': title,
+                    'extension': ext.lstrip('.'),
+                    'filename': filename
+                }
+            except ValueError:
+                return None
         return None
 
     def analyze_files(files_data):
@@ -43,40 +47,34 @@ try:
         
         # 基础统计
         st.header("📊 基础统计")
-        col1, col2, col3 = st.columns(3)
+        col1, col2 = st.columns(2)
         with col1:
-            st.metric("文章总数", len(df['title'].unique()))
+            st.metric("文章总数", len(df))
         with col2:
-            st.metric("文件总数", len(df))
-        with col3:
-            st.metric("文件格式数", len(df['extension'].unique()))
-
-        # 文件格式分布
-        st.header("📁 文件格式分布")
-        format_dist = df['extension'].value_counts()
-        fig = px.pie(values=format_dist.values, 
-                     names=format_dist.index, 
-                     title="文件格式分布")
-        st.plotly_chart(fig)
+            date_range = (df['date'].max() - df['date'].min()).days
+            st.metric("时间跨度", f"{date_range} 天")
 
         # 时间趋势分析
         st.header("📈 发文时间趋势")
-        daily_counts = df.groupby(df['date'].dt.date)['title'].nunique()
-        fig = px.line(x=daily_counts.index, 
-                      y=daily_counts.values,
-                      title="每日发文数量",
-                      labels={'x': '日期', 'y': '文章数量'})
+        df['month'] = df['date'].dt.to_period('M')
+        monthly_counts = df.groupby('month').size()
+        fig = px.bar(x=[str(m) for m in monthly_counts.index], 
+                     y=monthly_counts.values,
+                     title="月度发文数量",
+                     labels={'x': '月份', 'y': '文章数量'})
         st.plotly_chart(fig)
 
         # 文章列表
         st.header("📝 文章列表")
-        articles = df[['date', 'title']].drop_duplicates()
-        articles = articles.sort_values('date', ascending=False)
+        articles_df = df[['date', 'title']].copy()
+        articles_df['date'] = articles_df['date'].dt.strftime('%Y-%m-%d %H:%M:%S')
+        articles_df = articles_df.sort_values('date', ascending=False)
         st.dataframe(
-            articles.rename(columns={
+            articles_df.rename(columns={
                 'date': '发布时间',
                 'title': '文章标题'
-            })
+            }),
+            use_container_width=True
         )
 
         return df
@@ -88,40 +86,40 @@ try:
         # 文件上传说明
         st.markdown("""
         ### 使用说明
-        1. 准备公众号文章文件夹的压缩包（ZIP格式）
-        2. 点击下方"上传文件"按钮上传压缩包
-        3. 等待分析完成
+        1. 准备公众号文章的ZIP压缩包（包含.html文件）
+        2. 文件名格式要求：yyyyMMddHHmmss文章标题.html
+        3. 上传ZIP文件后系统将自动分析文章发布时间和标题
         """)
 
-        # 文件上传
         uploaded_file = st.file_uploader("选择文章文件夹的ZIP压缩包", type="zip")
 
         if uploaded_file is not None:
-            # 读取ZIP文件
-            with zipfile.ZipFile(uploaded_file) as z:
-                # 收集文件信息
-                files_data = []
-                for filename in z.namelist():
-                    if filename.endswith(('.pdf', '.docx', '.md', '.html', '.mhtml')):
-                        info = extract_info_from_filename(filename.split('/')[-1])
-                        if info:
-                            files_data.append(info)
+            try:
+                with zipfile.ZipFile(uploaded_file) as z:
+                    files_data = []
+                    for filename in z.namelist():
+                        if filename.endswith('.html'):
+                            base_filename = filename.split('/')[-1]
+                            info = extract_info_from_filename(base_filename)
+                            if info:
+                                files_data.append(info)
 
-            if files_data:
-                # 分析数据
-                df = analyze_files(files_data)
-
-                # 提供下载分析结果的功能
-                st.header("💾 导出分析结果")
-                csv = df.to_csv(index=False).encode('utf-8')
-                st.download_button(
-                    label="下载分析数据(CSV)",
-                    data=csv,
-                    file_name="wechat_articles_analysis.csv",
-                    mime="text/csv"
-                )
-            else:
-                st.error("未找到有效的文章文件，请检查ZIP文件内容")
+                if files_data:
+                    df = analyze_files(files_data)
+                    
+                    # 提供下载分析结果的功能
+                    st.header("💾 导出分析结果")
+                    csv = df.to_csv(index=False).encode('utf-8-sig')
+                    st.download_button(
+                        label="下载分析数据(CSV)",
+                        data=csv,
+                        file_name="wechat_articles_analysis.csv",
+                        mime="text/csv"
+                    )
+                else:
+                    st.error("未找到有效的文章文件，请确保ZIP包中包含正确格式的.html文件")
+            except Exception as e:
+                st.error(f"处理文件时出错: {str(e)}")
 
     # 添加基本异常处理
     @st.cache_data
